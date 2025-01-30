@@ -12,16 +12,16 @@ import (
 )
 
 type Config struct {
-	ServerAddress      string `json:"server_address"`
+	ServerAddress string `json:"server_address"`
 	ServerPort    string `json:"server_port"`
 	FetchInterval int    `json:"fetch_interval"`
 }
 
 type GPUInfo struct {
-	Name           string `json:"name"`
-	GPUUtilization string `json:"gpu_utilization"`
-	MemoryUsage    string `json:"memory_usage"`
-	Temperature    string `json:"temperature"`
+	Name        string `json:"name"`
+	MemoryUsage string `json:"memory_usage"`
+	MemoryTotal string `json:"memory_total"`
+	Temperature string `json:"temperature"`
 }
 
 func loadConfig() (*Config, error) {
@@ -37,7 +37,7 @@ func loadConfig() (*Config, error) {
 }
 
 func getGPUStatus() ([]GPUInfo, error) {
-	cmd := exec.Command("nvidia-smi", "--query-gpu=name,utilization.gpu,memory.used,temperature.gpu", "--format=csv,noheader,nounits")
+	cmd := exec.Command("nvidia-smi", "--query-gpu=name,memory.used,memory.total,temperature.gpu", "--format=csv,noheader,nounits")
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
@@ -53,27 +53,36 @@ func getGPUStatus() ([]GPUInfo, error) {
 		}
 
 		gpus = append(gpus, GPUInfo{
-			Name:           data[0],
-			GPUUtilization: data[1] + "%",
-			MemoryUsage:    data[2] + "MB",
-			Temperature:    data[3] + "°C",
+			Name:        data[0],
+			MemoryUsage: data[1] + "MB",
+			MemoryTotal: data[2] + "MB",
+			Temperature: data[3] + "°C",
 		})
 	}
 	return gpus, nil
 }
 
-func sendToServer(serverAddress string, serverPort string, status []GPUInfo) error {
+func sendToServer(serverAddress, serverPort string, status []GPUInfo) error {
 	jsonData, err := json.Marshal(status)
 	if err != nil {
 		return err
 	}
 
 	url := fmt.Sprintf("http://%s:%s/report", serverAddress, serverPort)
+	fmt.Println("Sending data to:", url)
 	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
 	if err != nil {
+		fmt.Println("Failed to send data:", err)
 		return err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		fmt.Println("Data sent successfully to", url)
+	} else {
+		fmt.Println("Failed to send data, server responded with:", resp.Status)
+	}
+
 	return nil
 }
 
