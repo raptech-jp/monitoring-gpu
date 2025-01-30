@@ -1,0 +1,22 @@
+services:
+  agent:
+    build:
+      context: ./agent
+    command: ["/app/gpu_agent"]
+    restart: always
+    networks:
+      - monitoring_net
+
+  server:
+    build:
+      context: ./server
+    ports:
+      - "8080:8080"
+    command: ["/app/gpu_server"]
+    restart: always
+    networks:
+      - monitoring_net
+
+networks:
+  monitoring_net:
+    driver: bridge
