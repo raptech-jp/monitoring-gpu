@@ -5,44 +5,71 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
 )
 
-type GPUStatus struct {
+type Config struct {
+	ServerAddress      string `json:"server_address"`
+	ServerPort    string `json:"server_port"`
+	FetchInterval int    `json:"fetch_interval"`
+}
+
+type GPUInfo struct {
+	Name           string `json:"name"`
 	GPUUtilization string `json:"gpu_utilization"`
 	MemoryUsage    string `json:"memory_usage"`
 	Temperature    string `json:"temperature"`
 }
 
-func getGPUStatus() (*GPUStatus, error) {
-	cmd := exec.Command("nvidia-smi", "--query-gpu=utilization.gpu,memory.used,temperature.gpu", "--format=csv,noheader,nounits")
+func loadConfig() (*Config, error) {
+	file, err := os.ReadFile("config.json")
+	if err != nil {
+		return nil, err
+	}
+	var config Config
+	if err := json.Unmarshal(file, &config); err != nil {
+		return nil, err
+	}
+	return &config, nil
+}
+
+func getGPUStatus() ([]GPUInfo, error) {
+	cmd := exec.Command("nvidia-smi", "--query-gpu=name,utilization.gpu,memory.used,temperature.gpu", "--format=csv,noheader,nounits")
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
 		return nil, err
 	}
 
-	data := strings.Split(strings.TrimSpace(out.String()), ", ")
-	if len(data) < 3 {
-		return nil, fmt.Errorf("unexpected output format")
-	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	var gpus []GPUInfo
+	for _, line := range lines {
+		data := strings.Split(line, ", ")
+		if len(data) < 4 {
+			return nil, fmt.Errorf("unexpected output format")
+		}
 
-	return &GPUStatus{
-		GPUUtilization: data[0] + "%",
-		MemoryUsage:    data[1] + "MB",
-		Temperature:    data[2] + "°C",
-	}, nil
+		gpus = append(gpus, GPUInfo{
+			Name:           data[0],
+			GPUUtilization: data[1] + "%",
+			MemoryUsage:    data[2] + "MB",
+			Temperature:    data[3] + "°C",
+		})
+	}
+	return gpus, nil
 }
 
-func sendToServer(status *GPUStatus) error {
+func sendToServer(serverAddress string, serverPort string, status []GPUInfo) error {
 	jsonData, err := json.Marshal(status)
 	if err != nil {
 		return err
 	}
 
-	resp, err := http.Post("http://your-server-ip:8080/report", "application/json", bytes.NewBuffer(jsonData))
+	url := fmt.Sprintf("http://%s:%s/report", serverAddress, serverPort)
+	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
 	if err != nil {
 		return err
 	}
@@ -51,13 +78,19 @@ func sendToServer(status *GPUStatus) error {
 }
 
 func main() {
+	config, err := loadConfig()
+	if err != nil {
+		fmt.Println("Error loading config:", err)
+		return
+	}
+
 	for {
 		status, err := getGPUStatus()
 		if err != nil {
 			fmt.Println("Error fetching GPU status:", err)
 		} else {
-			sendToServer(status)
+			sendToServer(config.ServerAddress, config.ServerPort, status)
 		}
-		time.Sleep(10 * time.Second) // 10秒ごとに取得
+		time.Sleep(time.Duration(config.FetchInterval) * time.Second) // 設定ファイルの取得間隔を適用
 	}
 }

@@ -1,63 +1,83 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
-	"os/exec"
-	"strings"
+	"sync"
 	"time"
 )
 
-type GPUStatus struct {
+type GPUInfo struct {
+	Name           string `json:"name"`
 	GPUUtilization string `json:"gpu_utilization"`
 	MemoryUsage    string `json:"memory_usage"`
 	Temperature    string `json:"temperature"`
 }
 
-func getGPUStatus() (*GPUStatus, error) {
-	cmd := exec.Command("nvidia-smi", "--query-gpu=utilization.gpu,memory.used,temperature.gpu", "--format=csv,noheader,nounits")
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	if err := cmd.Run(); err != nil {
-		return nil, err
-	}
-
-	data := strings.Split(strings.TrimSpace(out.String()), ", ")
-	if len(data) < 3 {
-		return nil, fmt.Errorf("unexpected output format")
-	}
-
-	return &GPUStatus{
-		GPUUtilization: data[0] + "%",
-		MemoryUsage:    data[1] + "MB",
-		Temperature:    data[2] + "°C",
-	}, nil
+type Server struct {
+	mu     sync.Mutex
+	status map[string][]GPUInfo
 }
 
-func sendToServer(status *GPUStatus) error {
-	jsonData, err := json.Marshal(status)
+func NewServer() *Server {
+	return &Server{
+		status: make(map[string][]GPUInfo),
+	}
+}
+
+func (s *Server) reportHandler(w http.ResponseWriter, r *http.Request) {
+	var gpus []GPUInfo
+	if err := json.NewDecoder(r.Body).Decode(&gpus); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+	host := r.RemoteAddr
+	s.mu.Lock()
+	s.status[host] = gpus
+	s.mu.Unlock()
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) statusHandler(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	jsonData, err := json.MarshalIndent(s.status, "", "  ")
 	if err != nil {
-		return err
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
 	}
 
-	resp, err := http.Post("http://your-server-ip:8080/report", "application/json", bytes.NewBuffer(jsonData))
-	if err != nil {
-		return err
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(jsonData)
+}
+
+func (s *Server) displayStatusCLI() {
+	for {
+		s.mu.Lock()
+		fmt.Println("\nGPU Status Report:")
+		for host, gpus := range s.status {
+			fmt.Printf("Host: %s\n", host)
+			for _, gpu := range gpus {
+				fmt.Printf(" GPU: %s\n GPU Usage: %s\n Memory Usage: %s\n Temperature: %s\n", gpu.Name, gpu.GPUUtilization, gpu.MemoryUsage, gpu.Temperature)
+			}
+		}
+		s.mu.Unlock()
+		fmt.Println("----------------------------------")
+		time.Sleep(10 * time.Second)
 	}
-	defer resp.Body.Close()
-	return nil
 }
 
 func main() {
-	for {
-		status, err := getGPUStatus()
-		if err != nil {
-			fmt.Println("Error fetching GPU status:", err)
-		} else {
-			sendToServer(status)
-		}
-		time.Sleep(10 * time.Second) // 10秒ごとに取得
-	}
+	server := NewServer()
+
+	http.HandleFunc("/report", server.reportHandler)
+	http.HandleFunc("/status", server.statusHandler)
+
+	fmt.Println("Server started on :8080")
+	go server.displayStatusCLI()
+	log.Fatal(http.ListenAndServe(":8080", nil))
 }
