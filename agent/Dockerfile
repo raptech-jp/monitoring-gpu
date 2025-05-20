@@ -1,10 +1,7 @@
-FROM golang:1.21 as builder
+FROM nvidia/cuda:12.2.2-runtime-ubuntu22.04 as base
 WORKDIR /app
 COPY main.go .
+RUN apt-get update && apt-get install -y nvidia-utils-525
 RUN GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o gpu_agent main.go
 
-FROM debian:bullseye-slim
-WORKDIR /app
-COPY --from=builder /app/gpu_agent .
-COPY config.json . 
 CMD ["/app/gpu_agent"]
